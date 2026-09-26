@@ -1,8 +1,7 @@
 """C ABI kernels for TPE mixture-density evaluation."""
 
-from std.algorithm import parallelize
-from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext
+from max.gpu import block_dim, block_idx, thread_idx
+from max.gpu.host import DeviceContext
 from std.math import abs, exp, log, log1p
 from std.memory import UnsafePointer
 from std.sys.info import simd_width_of
@@ -13,8 +12,6 @@ comptime GPUFPtr = UnsafePointer[Float64, MutAnyOrigin]
 comptime GPUIPtr = UnsafePointer[Int64, MutAnyOrigin]
 comptime LOG_SQRT_2PI = 0.91893853320467274178
 comptime W = simd_width_of[DType.float64]()
-comptime PARALLEL_WORK_THRESHOLD = 131072
-comptime PARALLEL_STREAM_THRESHOLD = 1048576
 
 
 def fp(addr: Int) -> FPtr:
@@ -147,7 +144,8 @@ def log_normal_cdf(x: Float64) -> Float64:
         var total = 1.0
         var term = 1.0
         var previous = 2.0
-        for i in range(1, 64):
+        var i = Int32(1)
+        while i < 64:
             term *= -Float64(2 * i - 1) * inv_x2
             if abs(term) >= previous:
                 break
@@ -155,6 +153,7 @@ def log_normal_cdf(x: Float64) -> Float64:
             previous = abs(term)
             if previous < 1.0e-16:
                 break
+            i += 1
         return -0.5 * x * x - log(-x) - LOG_SQRT_2PI + log(total)
     if x > 6.0:
         return -normal_cdf(-x)
@@ -181,18 +180,19 @@ def score_numeric_gpu_kernel(
     kinds: GPUIPtr,
     normalizers: GPUFPtr,
     accum: GPUFPtr,
-    n: Int,
-    kernels: Int,
-    dims: Int,
-    dimension_major: Int,
+    n: Int32,
+    kernels: Int32,
+    dims: Int32,
+    dimension_major: Int32,
 ):
-    var index = Int(block_idx.x * block_dim.x + thread_idx.x)
+    var index = Int32(block_idx.x * block_dim.x + thread_idx.x)
     if index >= n * kernels:
         return
     var row = index // kernels
     var kernel = index - row * kernels
     var score = 0.0
-    for dim in range(dims):
+    var dim = Int32(0)
+    while dim < dims:
         var parameter_index = kernel * dims + dim
         if dimension_major != 0:
             parameter_index = dim * kernels + kernel
@@ -203,18 +203,18 @@ def score_numeric_gpu_kernel(
         var step = steps[dim]
         if kind == 1:
             value = log(value)
-        elif kind == 2:
+        if kind == 2:
             var za = (value - 0.5 * step - mu) / sigma
             var zb = (value + 0.5 * step - mu) / sigma
             score += log_gauss_mass(za, zb) + normalizers[parameter_index]
-            continue
         elif kind == 3:
             var za = (log(value - 0.5 * step) - mu) / sigma
             var zb = (log(value + 0.5 * step) - mu) / sigma
             score += log_gauss_mass(za, zb) + normalizers[parameter_index]
-            continue
-        var z = (value - mu) / sigma
-        score += -0.5 * z * z + normalizers[parameter_index]
+        else:
+            var z = (value - mu) / sigma
+            score += -0.5 * z * z + normalizers[parameter_index]
+        dim += 1
     accum[index] = score
 
 
@@ -266,10 +266,10 @@ def mot_score_numeric_gpu(
             kind_device,
             normalizer_device,
             accum_device,
-            n,
-            kernels,
-            dims,
-            dimension_major,
+            Int32(n),
+            Int32(kernels),
+            Int32(dims),
+            Int32(dimension_major),
             grid_dim=(n * kernels + 255) // 256,
             block_dim=256,
         )
@@ -390,12 +390,8 @@ def mot_score_numeric(
                 score += -0.5 * z * z + normalizers[parameter_index]
             accum[row_base + scalar_kernel] = score
 
-    var work = n * kernels * max(dims, 1)
-    if dimension_major != 0 and work >= PARALLEL_WORK_THRESHOLD:
-        parallelize[score_row](n, min(n, 8))
-    else:
-        for row in range(n):
-            score_row(row)
+    for row in range(n):
+        score_row(row)
 
 
 @export("mot_compute_normalizers")
@@ -486,11 +482,8 @@ def mot_score_categorical(
             )
             kernel += 1
 
-    if n * kernels >= PARALLEL_STREAM_THRESHOLD:
-        parallelize[score_row](n, min(n, 8))
-    else:
-        for row in range(n):
-            score_row(row)
+    for row in range(n):
+        score_row(row)
 
 
 @export("mot_finish_log_pdf")
@@ -535,11 +528,8 @@ def mot_finish_log_pdf(
             kernel += 1
         result[row] = log(total) + maximum
 
-    if n * kernels >= PARALLEL_STREAM_THRESHOLD:
-        parallelize[finish_row](n, min(n, 8))
-    else:
-        for row in range(n):
-            finish_row(row)
+    for row in range(n):
+        finish_row(row)
 
 
 @export("mot_best_acquisition")
