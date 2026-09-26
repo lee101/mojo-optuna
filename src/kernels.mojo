@@ -1,4 +1,9 @@
-"""C ABI kernels for TPE mixture-density evaluation."""
+"""C ABI kernels for TPE mixture-density evaluation.
+
+Mixture parameters are always laid out dimension-major, that is
+``[dimension, component]``, so the component axis is contiguous and every
+scoring loop is a unit-stride vector loop.
+"""
 
 from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext
@@ -9,7 +14,6 @@ from std.sys.info import simd_width_of
 comptime FPtr = UnsafePointer[Float64, AnyOrigin[mut=True]]
 comptime IPtr = UnsafePointer[Int64, AnyOrigin[mut=True]]
 comptime GPUFPtr = UnsafePointer[Float64, MutAnyOrigin]
-comptime GPUIPtr = UnsafePointer[Int64, MutAnyOrigin]
 comptime LOG_SQRT_2PI = 0.91893853320467274178
 comptime W = simd_width_of[DType.float64]()
 
@@ -174,16 +178,13 @@ def log_gauss_mass(a: Float64, b: Float64) -> Float64:
 
 def score_numeric_gpu_kernel(
     x: GPUFPtr,
-    mus: GPUFPtr,
-    sigmas: GPUFPtr,
-    steps: GPUFPtr,
-    kinds: GPUIPtr,
+    inv_sigmas: GPUFPtr,
+    centers: GPUFPtr,
     normalizers: GPUFPtr,
     accum: GPUFPtr,
     n: Int32,
     kernels: Int32,
     dims: Int32,
-    dimension_major: Int32,
 ):
     var index = Int32(block_idx.x * block_dim.x + thread_idx.x)
     if index >= n * kernels:
@@ -193,27 +194,12 @@ def score_numeric_gpu_kernel(
     var score = 0.0
     var dim = Int32(0)
     while dim < dims:
-        var parameter_index = kernel * dims + dim
-        if dimension_major != 0:
-            parameter_index = dim * kernels + kernel
-        var kind = Int(kinds[dim])
-        var value = x[row * dims + dim]
-        var mu = mus[parameter_index]
-        var sigma = sigmas[parameter_index]
-        var step = steps[dim]
-        if kind == 1:
-            value = log(value)
-        if kind == 2:
-            var za = (value - 0.5 * step - mu) / sigma
-            var zb = (value + 0.5 * step - mu) / sigma
-            score += log_gauss_mass(za, zb) + normalizers[parameter_index]
-        elif kind == 3:
-            var za = (log(value - 0.5 * step) - mu) / sigma
-            var zb = (log(value + 0.5 * step) - mu) / sigma
-            score += log_gauss_mass(za, zb) + normalizers[parameter_index]
-        else:
-            var z = (value - mu) / sigma
-            score += -0.5 * z * z + normalizers[parameter_index]
+        var parameter_index = dim * kernels + kernel
+        var z = (
+            x[row * dims + dim] * inv_sigmas[parameter_index]
+            - centers[parameter_index]
+        )
+        score += normalizers[parameter_index] - 0.5 * z * z
         dim += 1
     accum[index] = score
 
@@ -221,55 +207,43 @@ def score_numeric_gpu_kernel(
 @export("mot_score_numeric_gpu")
 def mot_score_numeric_gpu(
     x_addr: Int,
-    mu_addr: Int,
-    sigma_addr: Int,
-    step_addr: Int,
-    kind_addr: Int,
+    inv_sigma_addr: Int,
+    center_addr: Int,
     normalizer_addr: Int,
     accum_addr: Int,
     n: Int,
     kernels: Int,
     dims: Int,
-    dimension_major: Int,
 ) abi("C") -> Int:
     try:
         var x = fp(x_addr)
-        var mus = fp(mu_addr)
-        var sigmas = fp(sigma_addr)
-        var steps = fp(step_addr)
-        var kinds = ip(kind_addr)
+        var inv_sigmas = fp(inv_sigma_addr)
+        var centers = fp(center_addr)
         var normalizers = fp(normalizer_addr)
         var accum = fp(accum_addr)
         var ctx = DeviceContext()
         var x_device = ctx.enqueue_create_buffer[DType.float64](n * dims)
-        var mu_device = ctx.enqueue_create_buffer[DType.float64](kernels * dims)
-        var sigma_device = ctx.enqueue_create_buffer[DType.float64](
+        var inv_device = ctx.enqueue_create_buffer[DType.float64](kernels * dims)
+        var center_device = ctx.enqueue_create_buffer[DType.float64](
             kernels * dims
         )
-        var step_device = ctx.enqueue_create_buffer[DType.float64](dims)
-        var kind_device = ctx.enqueue_create_buffer[DType.int64](dims)
         var normalizer_device = ctx.enqueue_create_buffer[DType.float64](
             kernels * dims
         )
         var accum_device = ctx.enqueue_create_buffer[DType.float64](n * kernels)
         ctx.enqueue_copy(x_device, x)
-        ctx.enqueue_copy(mu_device, mus)
-        ctx.enqueue_copy(sigma_device, sigmas)
-        ctx.enqueue_copy(step_device, steps)
-        ctx.enqueue_copy(kind_device, kinds)
+        ctx.enqueue_copy(inv_device, inv_sigmas)
+        ctx.enqueue_copy(center_device, centers)
         ctx.enqueue_copy(normalizer_device, normalizers)
         ctx.enqueue_function[score_numeric_gpu_kernel](
             x_device,
-            mu_device,
-            sigma_device,
-            step_device,
-            kind_device,
+            inv_device,
+            center_device,
             normalizer_device,
             accum_device,
             Int32(n),
             Int32(kernels),
             Int32(dims),
-            Int32(dimension_major),
             grid_dim=(n * kernels + 255) // 256,
             block_dim=256,
         )
@@ -283,115 +257,102 @@ def mot_score_numeric_gpu(
 @export("mot_score_numeric")
 def mot_score_numeric(
     x_addr: Int,
-    mu_addr: Int,
-    sigma_addr: Int,
-    step_addr: Int,
-    kind_addr: Int,
+    inv_sigma_addr: Int,
+    center_addr: Int,
     normalizer_addr: Int,
     accum_addr: Int,
     n: Int,
     kernels: Int,
     dims: Int,
-    dimension_major: Int,
 ) abi("C"):
     var x = fp(x_addr)
-    var mus = fp(mu_addr)
-    var sigmas = fp(sigma_addr)
-    var steps = fp(step_addr)
-    var kinds = ip(kind_addr)
+    var inv_sigmas = fp(inv_sigma_addr)
+    var centers = fp(center_addr)
     var normalizers = fp(normalizer_addr)
     var accum = fp(accum_addr)
 
-    @__copy_capture(
-        x,
-        mus,
-        sigmas,
-        steps,
-        kinds,
-        normalizers,
-        accum,
-        kernels,
-        dims,
-        dimension_major,
-    )
-    @parameter
-    def score_row(row: Int):
-        var row_base = row * kernels
-        var kernel = 0
-        while kernel + W <= kernels:
-            accum.store(row_base + kernel, SIMD[DType.float64, W](0.0))
-            kernel += W
-        while kernel < kernels:
-            accum[row_base + kernel] = 0.0
-            kernel += 1
-
-        if dimension_major != 0:
+    var block = 0
+    while block + W <= kernels:
+        for row in range(n):
+            var x_base = row * dims
+            var row_base = row * kernels
+            var score = SIMD[DType.float64, W](0.0)
             for dim in range(dims):
-                var kind = Int(kinds[dim])
-                var value = x[row * dims + dim]
-                var step = steps[dim]
-                if kind == 1:
-                    value = log(value)
-                if kind < 2:
-                    kernel = 0
-                    var parameter_base = dim * kernels
-                    while kernel + W <= kernels:
-                        var mu = mus.load[width=W](parameter_base + kernel)
-                        var sigma = sigmas.load[width=W](
-                            parameter_base + kernel
-                        )
-                        var z = (value - mu) / sigma
-                        var score = accum.load[width=W](row_base + kernel)
-                        score += -0.5 * z * z + normalizers.load[width=W](
-                            parameter_base + kernel
-                        )
-                        accum.store(row_base + kernel, score)
-                        kernel += W
-                    while kernel < kernels:
-                        var mu = mus[parameter_base + kernel]
-                        var sigma = sigmas[parameter_base + kernel]
-                        var z = (value - mu) / sigma
-                        accum[row_base + kernel] += (
-                            -0.5 * z * z + normalizers[parameter_base + kernel]
-                        )
-                        kernel += 1
-                    continue
-                for scalar_kernel in range(kernels):
-                    var parameter_index = dim * kernels + scalar_kernel
-                    var mu = mus[parameter_index]
-                    var sigma = sigmas[parameter_index]
-                    if kind == 2:
-                        var za = (value - 0.5 * step - mu) / sigma
-                        var zb = (value + 0.5 * step - mu) / sigma
-                        accum[row_base + scalar_kernel] += (
-                            log_gauss_mass(za, zb)
-                            + normalizers[parameter_index]
-                        )
-                    else:
-                        var za = (log(value - 0.5 * step) - mu) / sigma
-                        var zb = (log(value + 0.5 * step) - mu) / sigma
-                        accum[row_base + scalar_kernel] += (
-                            log_gauss_mass(za, zb)
-                            + normalizers[parameter_index]
-                        )
-            return
-
-        for scalar_kernel in range(kernels):
+                var base = dim * kernels + block
+                var z = (
+                    SIMD[DType.float64, W](x.unsafe_load(x_base + dim))
+                    * inv_sigmas.load[width=W](base)
+                    - centers.load[width=W](base)
+                )
+                score += normalizers.load[width=W](base) - 0.5 * z * z
+            accum.store(row_base + block, score)
+        block += W
+    while block < kernels:
+        for row in range(n):
+            var x_base = row * dims
             var score = 0.0
             for dim in range(dims):
-                var kind = Int(kinds[dim])
-                var value = x[row * dims + dim]
-                var parameter_index = scalar_kernel * dims + dim
-                var mu = mus[parameter_index]
-                var sigma = sigmas[parameter_index]
-                if kind == 1:
-                    value = log(value)
-                var z = (value - mu) / sigma
-                score += -0.5 * z * z + normalizers[parameter_index]
-            accum[row_base + scalar_kernel] = score
+                var base = dim * kernels + block
+                var z = (
+                    x.unsafe_load(x_base + dim)
+                    * inv_sigmas.unsafe_load(base)
+                    - centers.unsafe_load(base)
+                )
+                score += normalizers.unsafe_load(base) - 0.5 * z * z
+            accum.unsafe_store(row * kernels + block, score)
+        block += 1
 
+
+@export("mot_log_gauss_mass")
+def mot_log_gauss_mass(
+    za_addr: Int,
+    zb_addr: Int,
+    out_addr: Int,
+    count: Int,
+) abi("C"):
+    var za = fp(za_addr)
+    var zb = fp(zb_addr)
+    var out = fp(out_addr)
+    for i in range(count):
+        out.unsafe_store(i, log_gauss_mass(za.unsafe_load(i), zb.unsafe_load(i)))
+
+
+@export("mot_add_table")
+def mot_add_table(
+    accum_addr: Int,
+    table_addr: Int,
+    row_offset_addr: Int,
+    col_offset_addr: Int,
+    accumulate: Int,
+    n: Int,
+    kernels: Int,
+) abi("C"):
+    var accum = fp(accum_addr)
+    var table = fp(table_addr)
+    var row_offsets = ip(row_offset_addr)
+    var col_offsets = ip(col_offset_addr)
     for row in range(n):
-        score_row(row)
+        var base = Int(row_offsets.unsafe_load(row))
+        var row_base = row * kernels
+        var k = 0
+        while k + W <= kernels:
+            var offsets = col_offsets.load[width=W](k)
+            var values = SIMD[DType.float64, W](0.0)
+            for lane in range(W):
+                values[lane] = table.unsafe_load(base + Int(offsets[lane]))
+            if accumulate == 0:
+                accum.store(row_base + k, values)
+            else:
+                accum.store(
+                    row_base + k, accum.load[width=W](row_base + k) + values
+                )
+            k += W
+        while k < kernels:
+            var value = table.unsafe_load(base + Int(col_offsets.unsafe_load(k)))
+            if accumulate != 0:
+                value += accum.unsafe_load(row_base + k)
+            accum.unsafe_store(row_base + k, value)
+            k += 1
 
 
 @export("mot_compute_normalizers")
@@ -400,136 +361,107 @@ def mot_compute_normalizers(
     sigma_addr: Int,
     low_addr: Int,
     high_addr: Int,
-    step_addr: Int,
-    kind_addr: Int,
     normalizer_addr: Int,
     kernels: Int,
     dims: Int,
-    dimension_major: Int,
 ) abi("C"):
     var mus = fp(mu_addr)
     var sigmas = fp(sigma_addr)
     var lows = fp(low_addr)
     var highs = fp(high_addr)
-    var steps = fp(step_addr)
-    var kinds = ip(kind_addr)
     var normalizers = fp(normalizer_addr)
-    for kernel in range(kernels):
-        for dim in range(dims):
-            var parameter_index = kernel * dims + dim
-            if dimension_major != 0:
-                parameter_index = dim * kernels + kernel
-            var kind = Int(kinds[dim])
-            var mu = mus[parameter_index]
-            var sigma = sigmas[parameter_index]
-            var lo = lows[dim]
-            var hi = highs[dim]
-            var step = steps[dim]
-            if kind == 1:
-                lo = log(lo)
-                hi = log(hi)
-            elif kind == 2:
-                var a = (lo - 0.5 * step - mu) / sigma
-                var b = (hi + 0.5 * step - mu) / sigma
-                normalizers[parameter_index] = -log_gauss_mass(a, b)
-                continue
-            elif kind == 3:
-                var a = (log(lo - 0.5 * step) - mu) / sigma
-                var b = (log(hi + 0.5 * step) - mu) / sigma
-                normalizers[parameter_index] = -log_gauss_mass(a, b)
-                continue
+    for dim in range(dims):
+        var lo = lows.unsafe_load(dim)
+        var hi = highs.unsafe_load(dim)
+        for kernel in range(kernels):
+            var base = dim * kernels + kernel
+            var mu = mus.unsafe_load(base)
+            var sigma = sigmas.unsafe_load(base)
             var a = (lo - mu) / sigma
             var b = (hi - mu) / sigma
-            normalizers[parameter_index] = (
-                -LOG_SQRT_2PI - log_gauss_mass(a, b) - log(sigma)
+            normalizers.unsafe_store(
+                base,
+                -LOG_SQRT_2PI - log(sigma) - log_gauss_mass(a, b),
             )
 
 
 @export("mot_score_categorical")
 def mot_score_categorical(
     values_addr: Int,
-    probabilities_addr: Int,
+    log_probabilities_addr: Int,
     accum_addr: Int,
+    accumulate: Int,
     n: Int,
     kernels: Int,
-    choices: Int,
 ) abi("C"):
     var values = fp(values_addr)
-    var probabilities = fp(probabilities_addr)
+    var log_probabilities = fp(log_probabilities_addr)
     var accum = fp(accum_addr)
 
-    @__copy_capture(values, probabilities, accum, kernels, choices)
-    @parameter
-    def score_row(row: Int):
-        var choice = Int(values[row])
-        var row_base = row * kernels
-        var kernel = 0
-        while kernel + W <= kernels:
-            var probability = probabilities.load[width=W](
-                kernel * choices + choice
-            )
-            if choices != 1:
-                for lane in range(1, W):
-                    probability[lane] = probabilities[
-                        (kernel + lane) * choices + choice
-                    ]
-            var score = accum.load[width=W](row_base + kernel)
-            accum.store(row_base + kernel, score + log(probability))
-            kernel += W
-        while kernel < kernels:
-            accum[row_base + kernel] += log(
-                probabilities[kernel * choices + choice]
-            )
-            kernel += 1
-
     for row in range(n):
-        score_row(row)
+        var base = Int(values.unsafe_load(row)) * kernels
+        var row_base = row * kernels
+        var k = 0
+        while k + W <= kernels:
+            var value = log_probabilities.load[width=W](base + k)
+            if accumulate != 0:
+                value += accum.load[width=W](row_base + k)
+            accum.store(row_base + k, value)
+            k += W
+        while k < kernels:
+            var value = log_probabilities.unsafe_load(base + k)
+            if accumulate != 0:
+                value += accum.unsafe_load(row_base + k)
+            accum.unsafe_store(row_base + k, value)
+            k += 1
 
 
 @export("mot_finish_log_pdf")
 def mot_finish_log_pdf(
     accum_addr: Int,
-    weights_addr: Int,
+    log_weights_addr: Int,
     result_addr: Int,
     n: Int,
     kernels: Int,
 ) abi("C"):
     var accum = fp(accum_addr)
-    var weights = fp(weights_addr)
+    var log_weights = fp(log_weights_addr)
     var result = fp(result_addr)
 
-    @__copy_capture(accum, weights, result, kernels)
-    @parameter
-    def finish_row(row: Int):
-        var row_base = row * kernels
-        var maximum = -1.7976931348623157e308
-        var kernel = 0
-        while kernel + W <= kernels:
-            var value = accum.load[width=W](row_base + kernel) + log(
-                weights.load[width=W](kernel)
-            )
-            accum.store(row_base + kernel, value)
-            maximum = max(maximum, value.reduce_max())
-            kernel += W
-        while kernel < kernels:
-            var value = accum[row_base + kernel] + log(weights[kernel])
-            accum[row_base + kernel] = value
-            maximum = max(maximum, value)
-            kernel += 1
-        var total = 0.0
-        kernel = 0
-        while kernel + W <= kernels:
-            total += exp(
-                accum.load[width=W](row_base + kernel) - maximum
-            ).reduce_add()
-            kernel += W
-        while kernel < kernels:
-            total += exp(accum[row_base + kernel] - maximum)
-            kernel += 1
-        result[row] = log(total) + maximum
-
     for row in range(n):
-        finish_row(row)
+        var row_base = row * kernels
+        var peak = SIMD[DType.float64, W](
+            -1.7976931348623157e308
+        )
+        var k = 0
+        while k + W <= kernels:
+            peak = max(
+                peak, accum.load[width=W](row_base + k) + log_weights.load[width=W](k)
+            )
+            k += W
+        var maximum = peak.reduce_max()
+        while k < kernels:
+            maximum = max(
+                maximum,
+                accum.unsafe_load(row_base + k) + log_weights.unsafe_load(k),
+            )
+            k += 1
+        var sums = SIMD[DType.float64, W](0.0)
+        k = 0
+        while k + W <= kernels:
+            sums += exp(
+                accum.load[width=W](row_base + k) + log_weights.load[width=W](k)
+                - maximum
+            )
+            k += W
+        while k < kernels:
+            sums[0] += exp(
+                accum.unsafe_load(row_base + k)
+                + log_weights.unsafe_load(k)
+                - maximum
+            )
+            k += 1
+        result.unsafe_store(row, log(sums.reduce_add()) + maximum)
 
 
 @export("mot_best_acquisition")
@@ -539,9 +471,9 @@ def mot_best_acquisition(
     var below = fp(below_addr)
     var above = fp(above_addr)
     var best = 0
-    var best_value = below[0] - above[0]
+    var best_value = below.unsafe_load(0) - above.unsafe_load(0)
     for i in range(1, n):
-        var value = below[i] - above[i]
+        var value = below.unsafe_load(i) - above.unsafe_load(i)
         if value > best_value:
             best = i
             best_value = value

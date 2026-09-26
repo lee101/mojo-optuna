@@ -188,6 +188,67 @@ def test_gpu_request_matches_optuna_or_falls_back():
     assert mojo._last_device in ("cpu", "gpu")
 
 
+
+def test_row_chunking_matches_optuna(monkeypatch):
+    observations, space = mixed_problem()
+    reference = _ParzenEstimator(observations, space, parameters())
+    samples = reference.sample(np.random.RandomState(5), 97)
+    for chunk_bytes in (8, 64, 512):
+        monkeypatch.setattr(MojoParzenEstimator, "CHUNK_BYTES", chunk_bytes)
+        mojo = MojoParzenEstimator(observations, space, parameters())
+        assert mojo.log_pdf(samples) == pytest.approx(
+            reference.log_pdf(samples), abs=3e-7
+        )
+
+
+def test_discrete_dedup_table_matches_optuna():
+    rng = np.random.default_rng(41)
+    observations = {
+        "plain": rng.integers(0, 7, size=300).astype(float),
+        "log": np.exp(rng.integers(0, 5, size=300).astype(float)),
+    }
+    space = {
+        "plain": IntDistribution(0, 6),
+        "log": IntDistribution(1, 120, log=True),
+    }
+    reference = _ParzenEstimator(observations, space, parameters())
+    mojo = MojoParzenEstimator(observations, space, parameters())
+    samples = {
+        "plain": rng.integers(0, 7, size=40).astype(float),
+        "log": np.exp(rng.integers(0, 5, size=40).astype(float)),
+    }
+    assert mojo.log_pdf(samples) == pytest.approx(
+        reference.log_pdf(samples), abs=3e-7
+    )
+
+
+def test_gpu_dispatch_matches_optuna_above_threshold(monkeypatch):
+    rng = np.random.default_rng(43)
+    observations = {
+        "a": rng.uniform(-3.0, 3.0, size=4096),
+        "b": rng.uniform(0.1, 9.0, size=4096),
+    }
+    space = {"a": FloatDistribution(-3.0, 3.0), "b": FloatDistribution(0.1, 9.0)}
+    reference = _ParzenEstimator(observations, space, parameters())
+    mojo = MojoParzenEstimator(observations, space, parameters())
+    samples = {
+        "a": rng.uniform(-3.0, 3.0, size=128),
+        "b": rng.uniform(0.1, 9.0, size=128),
+    }
+    work = 128 * 4097 * 2
+    assert work >= MojoParzenEstimator.GPU_MIN_WORK
+    assert mojo.log_pdf(samples, device="gpu") == pytest.approx(
+        reference.log_pdf(samples), abs=3e-7
+    )
+    assert mojo._last_device in ("cpu", "gpu")
+    monkeypatch.setattr(MojoParzenEstimator, "GPU_MIN_WORK", 1 << 40)
+    below = MojoParzenEstimator(observations, space, parameters())
+    assert below.log_pdf(samples, device="gpu") == pytest.approx(
+        reference.log_pdf(samples), abs=3e-7
+    )
+    assert below._last_device == "cpu"
+
+
 def _run_mixed_study(sampler, trials=60):
     study = optuna.create_study(sampler=sampler)
     values = []

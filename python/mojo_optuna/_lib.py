@@ -17,9 +17,11 @@ SRC = os.path.join(ROOT, "src", "kernels.mojo")
 I = ctypes.c_int64
 
 _SIGNATURES = {
-    "mot_score_numeric": ([I] * 11, None),
-    "mot_score_numeric_gpu": ([I] * 11, I),
-    "mot_compute_normalizers": ([I] * 10, None),
+    "mot_score_numeric": ([I] * 8, None),
+    "mot_score_numeric_gpu": ([I] * 8, I),
+    "mot_log_gauss_mass": ([I] * 4, None),
+    "mot_add_table": ([I] * 7, None),
+    "mot_compute_normalizers": ([I] * 7, None),
     "mot_score_categorical": ([I] * 6, None),
     "mot_finish_log_pdf": ([I] * 5, None),
     "mot_best_acquisition": ([I, I, I], I),
