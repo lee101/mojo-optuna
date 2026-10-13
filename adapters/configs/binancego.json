@@ -1,0 +1,189 @@
+{
+ "name": "binancego_e14",
+ "storage": "../../studies/binancego_e14.journal",
+ "workdir": "../../runs/binancego_e14",
+ "cwd": "../..",
+ "fold_order": "spread",
+ "seed": 0,
+ "_doc": "binancego honest sim, E14 fold set (round5 run_kfold_ext). Set BGO_REPO (dir with binancego_sim_honest + experiments/simhonest_20261011).",
+ "command": "${ADAPTER_PY:-python3} adapters/binancego_kfold.py --repo ${BGO_REPO:?set BGO_REPO} --grid-file experiments/simhonest_20261011/grid_s4.txt --pairs {universe} --extra-grid '--warm-history --daily-probe-intrabar --daily-probe-max-age-hours 168' {args} -- --bin ./binancego_sim_honest --data ${BGO_DATA:-experiments/simhonest_20261011/market_data} --cache ${BGO_CACHE:-experiments/simhonest_20261011/cache_frozen_20261011.jsonl} --dd 35 --train-start 2025-11-01 --fold-count 14 --fold-start 2026-01-08 --bar-stride 4 --jobs 2",
+ "mode": "stream",
+ "parse": "json",
+ "timeout": 7200,
+ "threads_per_job": 2,
+ "arg_format": "--set {name}={value}",
+ "folds": 14,
+ "params": {
+  "edges": {
+   "type": "int",
+   "low": 45,
+   "high": 120,
+   "step": 5,
+   "default": 75
+  },
+  "candidacy-edge": {
+   "type": "int",
+   "low": 25,
+   "high": 75,
+   "step": 5,
+   "default": 45
+  },
+  "gross": {
+   "type": "float",
+   "low": 0.75,
+   "high": 2.5,
+   "step": 0.25,
+   "default": 1.0
+  },
+  "fixed-weight": {
+   "type": "float",
+   "low": 0.25,
+   "high": 1.5,
+   "step": 0.25,
+   "default": 0.5
+  },
+  "holds": {
+   "type": "int",
+   "low": 8,
+   "high": 32,
+   "step": 4,
+   "default": 16
+  },
+  "stop-loss-bps": {
+   "type": "int",
+   "low": 300,
+   "high": 1000,
+   "step": 50,
+   "default": 650
+  },
+  "correlation-haircut": {
+   "type": "float",
+   "low": 0.0,
+   "high": 0.3,
+   "step": 0.05,
+   "default": 0.1
+  },
+  "market-regime-lookback": {
+   "type": "cat",
+   "choices": [
+    0,
+    24,
+    72,
+    168
+   ],
+   "default": 72
+  }
+ },
+ "universe": {
+  "symbols": [
+   "TRXUSDT",
+   "ZBTUSDT",
+   "LUNCUSDT",
+   "ARPAUSDT",
+   "PSGUSDT",
+   "RADUSDT",
+   "DYMUSDT",
+   "ZKUSDT",
+   "PEPEUSDT",
+   "SPKUSDT",
+   "CGPTUSDT",
+   "NOMUSDT",
+   "XRPUSDT",
+   "OPUSDT",
+   "SUIUSDT",
+   "INJUSDT",
+   "PENGUUSDT",
+   "SEIUSDT",
+   "1MBABYDOGEUSDT",
+   "ETHUSDT",
+   "RENDERUSDT",
+   "MITOUSDT",
+   "ZECUSDT",
+   "EDUUSDT",
+   "JTOUSDT",
+   "MANTAUSDT",
+   "OGUSDT",
+   "DEXEUSDT",
+   "PENDLEUSDT",
+   "STRKUSDT",
+   "VIRTUALUSDT",
+   "ENAUSDT",
+   "ETCUSDT",
+   "BBUSDT",
+   "BNBUSDT",
+   "CHZUSDT",
+   "DUSKUSDT",
+   "ZROUSDT"
+  ],
+  "always": [
+   "ETHUSDT",
+   "BNBUSDT",
+   "XRPUSDT"
+  ],
+  "min": 10,
+  "max": 38
+ },
+ "objectives": [
+  {
+   "metric": "ret",
+   "agg": "mean",
+   "direction": "maximize"
+  },
+  {
+   "metric": "dd",
+   "agg": "max",
+   "direction": "minimize"
+  }
+ ],
+ "constraints": [
+  {
+   "metric": "dd",
+   "agg": "max",
+   "le": 35
+  }
+ ],
+ "select": {
+  "metric": "ret",
+  "agg": "lcb",
+  "direction": "maximize"
+ },
+ "sampler": {
+  "type": "tpe",
+  "multivariate": true,
+  "constant_liar": true,
+  "n_startup": 24
+ },
+ "pruner": {
+  "type": "none",
+  "kill": [
+   {
+    "metric": "dd",
+    "agg": "max",
+    "gt": 50
+   }
+  ]
+ },
+ "nested": {
+  "outer": [
+   8,
+   9,
+   10,
+   11,
+   12,
+   13
+  ],
+  "mode": "before",
+  "min_inner": 5
+ },
+ "baseline": {
+  "edges": 75,
+  "candidacy-edge": 45,
+  "gross": 1.0,
+  "fixed-weight": 0.5,
+  "holds": 16,
+  "stop-loss-bps": 650,
+  "correlation-haircut": 0.1,
+  "market-regime-lookback": 72,
+  "universe": "all"
+ }
+}

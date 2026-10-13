@@ -7,13 +7,13 @@ scoring loop is a unit-stride vector loop.
 
 from max.gpu import block_dim, block_idx, thread_idx
 from max.gpu.host import DeviceContext
-from std.math import abs, exp, log, log1p
-from std.memory import UnsafePointer
+from std.math import abs, exp, log, log1p, sqrt
+from std.memory import Pointer
 from std.sys.info import simd_width_of
 
-comptime FPtr = UnsafePointer[Float64, AnyOrigin[mut=True]]
-comptime IPtr = UnsafePointer[Int64, AnyOrigin[mut=True]]
-comptime GPUFPtr = UnsafePointer[Float64, MutAnyOrigin]
+comptime FPtr = Pointer[Float64, AnyOrigin[mut=True]]
+comptime IPtr = Pointer[Int64, AnyOrigin[mut=True]]
+comptime GPUFPtr = Pointer[Float64, MutAnyOrigin]
 comptime LOG_SQRT_2PI = 0.91893853320467274178
 comptime W = simd_width_of[DType.float64]()
 
@@ -196,12 +196,12 @@ def score_numeric_gpu_kernel(
     while dim < dims:
         var parameter_index = dim * kernels + kernel
         var z = (
-            x[row * dims + dim] * inv_sigmas[parameter_index]
-            - centers[parameter_index]
+            x.unsafe_load(row * dims + dim) * inv_sigmas.unsafe_load(parameter_index)
+            - centers.unsafe_load(parameter_index)
         )
-        score += normalizers[parameter_index] - 0.5 * z * z
+        score += normalizers.unsafe_load(parameter_index) - 0.5 * z * z
         dim += 1
-    accum[index] = score
+    accum.unsafe_store(index, score)
 
 
 @export("mot_score_numeric_gpu")
@@ -281,11 +281,11 @@ def mot_score_numeric(
                 var base = dim * kernels + block
                 var z = (
                     SIMD[DType.float64, W](x.unsafe_load(x_base + dim))
-                    * inv_sigmas.load[width=W](base)
-                    - centers.load[width=W](base)
+                    * inv_sigmas.unsafe_load[width=W](base)
+                    - centers.unsafe_load[width=W](base)
                 )
-                score += normalizers.load[width=W](base) - 0.5 * z * z
-            accum.store(row_base + block, score)
+                score += normalizers.unsafe_load[width=W](base) - 0.5 * z * z
+            accum.unsafe_store(row_base + block, score)
         block += W
     while block < kernels:
         for row in range(n):
@@ -336,15 +336,15 @@ def mot_add_table(
         var row_base = row * kernels
         var k = 0
         while k + W <= kernels:
-            var offsets = col_offsets.load[width=W](k)
+            var offsets = col_offsets.unsafe_load[width=W](k)
             var values = SIMD[DType.float64, W](0.0)
             for lane in range(W):
                 values[lane] = table.unsafe_load(base + Int(offsets[lane]))
             if accumulate == 0:
-                accum.store(row_base + k, values)
+                accum.unsafe_store(row_base + k, values)
             else:
-                accum.store(
-                    row_base + k, accum.load[width=W](row_base + k) + values
+                accum.unsafe_store(
+                    row_base + k, accum.unsafe_load[width=W](row_base + k) + values
                 )
             k += W
         while k < kernels:
@@ -403,10 +403,10 @@ def mot_score_categorical(
         var row_base = row * kernels
         var k = 0
         while k + W <= kernels:
-            var value = log_probabilities.load[width=W](base + k)
+            var value = log_probabilities.unsafe_load[width=W](base + k)
             if accumulate != 0:
-                value += accum.load[width=W](row_base + k)
-            accum.store(row_base + k, value)
+                value += accum.unsafe_load[width=W](row_base + k)
+            accum.unsafe_store(row_base + k, value)
             k += W
         while k < kernels:
             var value = log_probabilities.unsafe_load(base + k)
@@ -436,7 +436,7 @@ def mot_finish_log_pdf(
         var k = 0
         while k + W <= kernels:
             peak = max(
-                peak, accum.load[width=W](row_base + k) + log_weights.load[width=W](k)
+                peak, accum.unsafe_load[width=W](row_base + k) + log_weights.unsafe_load[width=W](k)
             )
             k += W
         var maximum = peak.reduce_max()
@@ -450,7 +450,7 @@ def mot_finish_log_pdf(
         k = 0
         while k + W <= kernels:
             sums += exp(
-                accum.load[width=W](row_base + k) + log_weights.load[width=W](k)
+                accum.unsafe_load[width=W](row_base + k) + log_weights.unsafe_load[width=W](k)
                 - maximum
             )
             k += W
@@ -478,3 +478,105 @@ def mot_best_acquisition(
             best = i
             best_value = value
     return best
+
+
+@export("mot_matern52_cross")
+def mot_matern52_cross(
+    a_addr: Int, bt_addr: Int, m: Int, n: Int, d: Int, out_addr: Int
+) abi("C"):
+    """Matern-5/2: out[i, j] = k(|a_i - b_j|) for length-scale-normalised a [m, d] and b^T [d, n]."""
+    var a = fp(a_addr)
+    var bt = fp(bt_addr)
+    var out = fp(out_addr)
+    comptime S5 = 2.23606797749978969641
+    for i in range(m):
+        var row = i * n
+        var j = 0
+        while j + W <= n:
+            var acc = SIMD[DType.float64, W](0.0)
+            for k in range(d):
+                var diff = bt.unsafe_load[width=W](k * n + j) - a.unsafe_load(i * d + k)
+                acc += diff * diff
+            var r = sqrt(acc)
+            out.unsafe_store(row + j, (1.0 + S5 * r + (5.0 / 3.0) * acc) * exp(-S5 * r))
+            j += W
+        while j < n:
+            var acc: Float64 = 0.0
+            for k in range(d):
+                var diff = bt.unsafe_load(k * n + j) - a.unsafe_load(i * d + k)
+                acc += diff * diff
+            var r = sqrt(acc)
+            out.unsafe_store(row + j, (1.0 + S5 * r + (5.0 / 3.0) * acc) * exp(-S5 * r))
+            j += 1
+
+
+@export("mot_cscv")
+def mot_cscv(
+    b_addr: Int,
+    s: Int,
+    n: Int,
+    masks_addr: Int,
+    combos: Int,
+    is_addr: Int,
+    total_addr: Int,
+    lam_addr: Int,
+    best_is_addr: Int,
+    best_oos_addr: Int,
+) abi("C"):
+    """CSCV over S row blocks of B [S, N]: per combination, logit rank of the IS-best trial OOS."""
+    var b = fp(b_addr)
+    var masks = ip(masks_addr)
+    var isv = fp(is_addr)
+    var total = fp(total_addr)
+    var lam = fp(lam_addr)
+    var best_is = fp(best_is_addr)
+    var best_oos = fp(best_oos_addr)
+    var half = Float64(s // 2)
+    for j in range(n):
+        var t: Float64 = 0.0
+        for r in range(s):
+            t += b.unsafe_load(r * n + j)
+        total.unsafe_store(j, t)
+    for c in range(combos):
+        var mask = Int(masks.unsafe_load(c))
+        var first = True
+        for r in range(s):
+            if (mask >> r) & 1 == 0:
+                continue
+            var j = 0
+            if first:
+                while j + W <= n:
+                    isv.unsafe_store(j, b.unsafe_load[width=W](r * n + j))
+                    j += W
+                while j < n:
+                    isv.unsafe_store(j, b.unsafe_load(r * n + j))
+                    j += 1
+                first = False
+            else:
+                while j + W <= n:
+                    isv.unsafe_store(j, isv.unsafe_load[width=W](j) + b.unsafe_load[width=W](r * n + j))
+                    j += W
+                while j < n:
+                    isv.unsafe_store(j, isv.unsafe_load(j) + b.unsafe_load(r * n + j))
+                    j += 1
+        var arg = 0
+        var bv = isv.unsafe_load(0)
+        for j in range(1, n):
+            var v = isv.unsafe_load(j)
+            if v > bv:
+                bv = v
+                arg = j
+        var target = total.unsafe_load(arg) - isv.unsafe_load(arg)
+        var below: Float64 = 0.0
+        var equal: Float64 = 0.0
+        for j in range(n):
+            var o = total.unsafe_load(j) - isv.unsafe_load(j)
+            if o < target:
+                below += 1.0
+            elif o == target:
+                equal += 1.0
+        var rank = below + 0.5 * (equal - 1.0) + 1.0
+        var w = rank / Float64(n + 1)
+        lam.unsafe_store(c, log(w / (1.0 - w)))
+        best_is.unsafe_store(c, bv / half)
+        best_oos.unsafe_store(c, target / half)

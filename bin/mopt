@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# mopt from a checkout: uses the pixi env if present (Mojo kernels), else system python3 (numpy fallbacks).
+root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+py="$root/.pixi/envs/default/bin/python"
+[ -x "$py" ] || py="${MOPT_PYTHON:-python3}"
+PYTHONPATH="$root/python${PYTHONPATH:+:$PYTHONPATH}" exec "$py" -m mojo_optuna.search.cli "$@"

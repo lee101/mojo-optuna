@@ -1,0 +1,115 @@
+{
+  "name": "toy",
+  "storage": "../../studies/toy.journal",
+  "seed": 0,
+  "command": "python3 examples/toy_objective.py --x {x} --lr {lr} --mode {mode} --universe {universe} --fold {fold}",
+  "mode": "per_fold",
+  "parse": "json",
+  "cwd": "../..",
+  "timeout": 600,
+  "folds": 8,
+  "fold_order": "spread",
+  "params": {
+    "x": {
+      "type": "float",
+      "low": -3,
+      "high": 3,
+      "default": 0
+    },
+    "lr": {
+      "type": "float",
+      "low": 0.0001,
+      "high": 0.1,
+      "log": true
+    },
+    "mode": {
+      "type": "cat",
+      "choices": [
+        "a",
+        "b"
+      ]
+    }
+  },
+  "universe": {
+    "symbols": [
+      "BTC",
+      "ETH",
+      "SOL",
+      "XRP",
+      "DOGE",
+      "ADA",
+      "AVAX",
+      "LINK",
+      "DOT",
+      "LTC",
+      "TRX",
+      "BCH"
+    ],
+    "always": [
+      "BTC"
+    ],
+    "min": 2,
+    "max": 6
+  },
+  "objectives": [
+    {
+      "metric": "ret",
+      "agg": "mean",
+      "direction": "maximize"
+    },
+    {
+      "metric": "dd",
+      "agg": "max",
+      "direction": "minimize"
+    }
+  ],
+  "constraints": [
+    {
+      "metric": "dd",
+      "agg": "max",
+      "le": 35
+    }
+  ],
+  "select": {
+    "metric": "ret",
+    "agg": "mean",
+    "direction": "maximize"
+  },
+  "sampler": {
+    "type": "tpe",
+    "multivariate": true,
+    "constant_liar": true,
+    "n_startup": 16
+  },
+  "pruner": {
+    "type": "asha",
+    "min_folds": 2,
+    "eta": 2,
+    "n_startup": 6,
+    "kill": [
+      {
+        "metric": "dd",
+        "agg": "max",
+        "gt": 60
+      }
+    ]
+  },
+  "nested": {
+    "outer": [
+      4,
+      5,
+      6,
+      7
+    ],
+    "mode": "before",
+    "purge": 0,
+    "min_inner": 2
+  },
+  "baseline": {
+    "x": 0,
+    "lr": 0.01,
+    "mode": "a",
+    "universe": "all"
+  },
+  "workdir": "../../runs/toy"
+}

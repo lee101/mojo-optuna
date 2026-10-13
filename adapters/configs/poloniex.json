@@ -1,0 +1,114 @@
+{
+ "name": "poloniex_hourly",
+ "storage": "../../studies/poloniex_hourly.journal",
+ "workdir": "../../runs/poloniex_hourly",
+ "cwd": "../..",
+ "fold_order": "spread",
+ "seed": 0,
+ "_doc": "bitbankpoloniex hourly k-fold replay (bbpx-hourly worktree). Set BBPX_WT, BBPX_BIN (replay.test from prepare_go.py), BBPX_PANEL/BBPX_SCORES for universe fixtures, BBPX_BASE (base config json). Harness emits all folds at the end, so only kill rules apply (no ASHA). For a wider candidate set build a panel with more pairs and extend symbols/all_symbols.",
+ "command": "${ADAPTER_PY:-python3} adapters/poloniex_replay.py --wt ${BBPX_WT:?set BBPX_WT} --bin ${BBPX_BIN:?set BBPX_BIN} --panel ${BBPX_PANEL:?} --scores ${BBPX_SCORES:?} --all {all_symbols} --universe {universe} --base-config ${BBPX_BASE:?} {args}",
+ "mode": "stream",
+ "parse": "json",
+ "timeout": 14400,
+ "threads_per_job": 2,
+ "arg_format": "--cfg {name}={value}",
+ "folds": 42,
+ "params": {
+  "Slots": {
+   "type": "int",
+   "low": 2,
+   "high": 4,
+   "default": 3
+  },
+  "MinHoldH": {
+   "type": "int",
+   "low": 24,
+   "high": 96,
+   "step": 12,
+   "default": 72
+  },
+  "Reserve": {
+   "type": "float",
+   "low": 0.2,
+   "high": 0.5,
+   "step": 0.05,
+   "default": 0.4
+  },
+  "ExitRamp": {
+   "type": "int",
+   "low": 10,
+   "high": 40,
+   "step": 5,
+   "default": 20
+  },
+  "all_symbols": {
+   "type": "fixed",
+   "value": "BNBUSDT,ETCUSDT,ETHUSDT,PEPEUSDT,SUIUSDT,TRXUSDT,XRPUSDT,ZECUSDT",
+   "arg": false
+  }
+ },
+ "universe": {
+  "symbols": [
+   "BNBUSDT",
+   "ETCUSDT",
+   "ETHUSDT",
+   "PEPEUSDT",
+   "SUIUSDT",
+   "TRXUSDT",
+   "XRPUSDT",
+   "ZECUSDT"
+  ],
+  "min": 3
+ },
+ "objectives": [
+  {
+   "metric": "ret",
+   "agg": "mean",
+   "direction": "maximize"
+  },
+  {
+   "metric": "mdd",
+   "agg": "max",
+   "direction": "minimize"
+  }
+ ],
+ "constraints": [
+  {
+   "metric": "mdd",
+   "agg": "max",
+   "le": 35
+  }
+ ],
+ "select": {
+  "metric": "ret",
+  "agg": "lcb",
+  "direction": "maximize"
+ },
+ "sampler": {
+  "type": "tpe",
+  "multivariate": true,
+  "constant_liar": true,
+  "n_startup": 16
+ },
+ "pruner": {
+  "type": "none",
+  "kill": [
+   {
+    "metric": "mdd",
+    "agg": "max",
+    "gt": 55
+   }
+  ]
+ },
+ "nested": {
+  "mode": "before",
+  "min_inner": 14
+ },
+ "baseline": {
+  "Slots": 3,
+  "MinHoldH": 72,
+  "Reserve": 0.4,
+  "ExitRamp": 20,
+  "universe": "all"
+ }
+}

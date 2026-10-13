@@ -25,6 +25,8 @@ _SIGNATURES = {
     "mot_score_categorical": ([I] * 6, None),
     "mot_finish_log_pdf": ([I] * 5, None),
     "mot_best_acquisition": ([I, I, I], I),
+    "mot_matern52_cross": ([I] * 6, None),
+    "mot_cscv": ([I] * 10, None),
 }
 
 
@@ -57,12 +59,19 @@ def build(force: bool = False) -> str:
 
 
 _LIBRARY: ctypes.CDLL | None = None
+_ERROR: Exception | None = None
 
 
 def lib() -> ctypes.CDLL:
-    global _LIBRARY
+    global _LIBRARY, _ERROR
+    if _ERROR is not None:
+        raise _ERROR
     if _LIBRARY is None:
-        _LIBRARY = ctypes.CDLL(build())
+        try:
+            _LIBRARY = ctypes.CDLL(build())
+        except Exception as e:  # cache so callers with a numpy fallback do not retry a build per call
+            _ERROR = e if isinstance(e, BuildError) else BuildError(str(e))
+            raise _ERROR
         for name, (argtypes, restype) in _SIGNATURES.items():
             function = getattr(_LIBRARY, name)
             function.argtypes = argtypes

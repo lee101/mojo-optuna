@@ -1,0 +1,122 @@
+{
+ "name": "vmidx",
+ "storage": "../../studies/vmidx.journal",
+ "workdir": "../../runs/vmidx",
+ "cwd": "../..",
+ "fold_order": "spread",
+ "seed": 0,
+ "_doc": "predictionmojo VM-SPY vol-target; one fold per calendar year; cheap (~3s/trial). PM_ROOT = predictionmojo worktree.",
+ "command": "${ADAPTER_PY:-python3} adapters/vmidx_wf.py --pm-root ${PM_ROOT:?set PM_ROOT} --tv {tv} --cap {cap} --q {q} --trend {trend} --folds {folds} --bps 5",
+ "mode": "stream",
+ "parse": "json",
+ "timeout": 600,
+ "threads_per_job": 1,
+ "folds": [
+  2005,
+  2006,
+  2007,
+  2008,
+  2009,
+  2010,
+  2011,
+  2012,
+  2013,
+  2014,
+  2015,
+  2016,
+  2017,
+  2018,
+  2019,
+  2020,
+  2021,
+  2022,
+  2023,
+  2024,
+  2025
+ ],
+ "params": {
+  "tv": {
+   "type": "float",
+   "low": 0.1,
+   "high": 0.3,
+   "step": 0.01,
+   "default": 0.25
+  },
+  "cap": {
+   "type": "float",
+   "low": 1.0,
+   "high": 2.0,
+   "step": 0.05,
+   "default": 1.75
+  },
+  "q": {
+   "type": "cat",
+   "choices": [
+    0.0,
+    0.25,
+    0.5
+   ],
+   "default": 0.0
+  },
+  "trend": {
+   "type": "cat",
+   "choices": [
+    0,
+    1
+   ],
+   "default": 1
+  }
+ },
+ "objectives": [
+  {
+   "metric": "ret",
+   "agg": "mean",
+   "direction": "maximize"
+  },
+  {
+   "metric": "rdd21",
+   "agg": "max",
+   "direction": "minimize"
+  }
+ ],
+ "constraints": [
+  {
+   "metric": "rdd21",
+   "agg": "max",
+   "le": 30
+  }
+ ],
+ "select": {
+  "metric": "excess",
+  "agg": "mean",
+  "direction": "maximize"
+ },
+ "sampler": {
+  "type": "tpe",
+  "multivariate": true,
+  "constant_liar": true,
+  "n_startup": 12
+ },
+ "nested": {
+  "outer": [
+   2016,
+   2017,
+   2018,
+   2019,
+   2020,
+   2021,
+   2022,
+   2023,
+   2024,
+   2025
+  ],
+  "mode": "before",
+  "min_inner": 8
+ },
+ "baseline": {
+  "tv": 0.25,
+  "cap": 1.75,
+  "q": 0.0,
+  "trend": 1
+ }
+}

@@ -1,0 +1,22 @@
+[project]
+name = "mojo-optuna"
+version = "0.2.0"
+description = "Mojo-accelerated Optuna TPE + a fold-aware hyperparameter / symbol-universe search engine (mopt)"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Lee Penkman" }]
+requires-python = ">=3.10"
+dependencies = ["optuna>=4.9,<5", "numpy", "scipy"]
+
+[project.optional-dependencies]
+bench = ["cmaes"]
+
+[project.scripts]
+mopt = "mojo_optuna.search.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["python"]

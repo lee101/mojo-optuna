@@ -1,0 +1,182 @@
+{
+ "name": "kucoin_risk",
+ "storage": "../../studies/kucoin_risk.journal",
+ "workdir": "../../runs/kucoin_risk",
+ "cwd": "../..",
+ "fold_order": "spread",
+ "seed": 0,
+ "_doc": "bitbankkucoin GBDT kfold. Set KC_REPO; verify fold count with one run (start 2021-01-01, 120d folds).",
+ "command": "${ADAPTER_PY:-python3} adapters/kucoin_kfold.py --repo ${KC_REPO:?set KC_REPO} --universe {universe} -- -start 2021-01-01 -model gbdt -bag 4 -depth 3 -trees 400 -stride 8 -lev 3 -regime-lb 0 -fold-days 120 -dd-gate 0.25 -seed 1 {args}",
+ "mode": "stream",
+ "parse": "json",
+ "timeout": 10800,
+ "threads_per_job": 4,
+ "arg_format": "-{name} {value}",
+ "folds": 17,
+ "params": {
+  "vol-target": {
+   "type": "float",
+   "low": 0.3,
+   "high": 0.6,
+   "step": 0.05,
+   "default": 0.45
+  },
+  "dd-throttle": {
+   "type": "float",
+   "low": 0.0,
+   "high": 0.25,
+   "step": 0.05,
+   "default": 0.25
+  },
+  "gross": {
+   "type": "float",
+   "low": 2.0,
+   "high": 4.5,
+   "step": 0.5,
+   "default": 4.5
+  },
+  "max-weight": {
+   "type": "float",
+   "low": 0.75,
+   "high": 1.5,
+   "step": 0.25,
+   "default": 1.5
+  },
+  "longs": {
+   "type": "int",
+   "low": 2,
+   "high": 4,
+   "default": 3
+  },
+  "edge": {
+   "type": "int",
+   "low": 60,
+   "high": 200,
+   "step": 20,
+   "default": 120
+  },
+  "min-hold": {
+   "type": "int",
+   "low": 6,
+   "high": 48,
+   "step": 6,
+   "default": 24
+  },
+  "div-corr": {
+   "type": "float",
+   "low": 0.0,
+   "high": 0.9,
+   "step": 0.1,
+   "default": 0.7
+  },
+  "div-lb": {
+   "type": "cat",
+   "choices": [
+    240,
+    480,
+    720,
+    1440
+   ],
+   "default": 720
+  }
+ },
+ "universe": {
+  "symbols": [
+   "BTC",
+   "ETH",
+   "XRP",
+   "SOL",
+   "BNB",
+   "DOGE",
+   "ADA",
+   "TRX",
+   "LINK",
+   "AVAX",
+   "DOT",
+   "LTC",
+   "BCH",
+   "NEAR",
+   "UNI",
+   "AAVE",
+   "SUI",
+   "XLM",
+   "HBAR",
+   "APT",
+   "ATOM",
+   "FIL",
+   "ETC",
+   "ICP"
+  ],
+  "always": [
+   "BTC",
+   "ETH"
+  ],
+  "min": 8,
+  "max": 24
+ },
+ "objectives": [
+  {
+   "metric": "ret",
+   "agg": "mean",
+   "direction": "maximize"
+  },
+  {
+   "metric": "mdd",
+   "agg": "max",
+   "direction": "minimize"
+  }
+ ],
+ "constraints": [
+  {
+   "metric": "mdd",
+   "agg": "max",
+   "le": 35
+  }
+ ],
+ "select": {
+  "metric": "ret",
+  "agg": "lcb",
+  "direction": "maximize"
+ },
+ "sampler": {
+  "type": "tpe",
+  "multivariate": true,
+  "constant_liar": true,
+  "n_startup": 20
+ },
+ "pruner": {
+  "type": "none",
+  "kill": [
+   {
+    "metric": "mdd",
+    "agg": "max",
+    "gt": 55
+   }
+  ]
+ },
+ "nested": {
+  "outer": [
+   11,
+   12,
+   13,
+   14,
+   15,
+   16
+  ],
+  "mode": "before",
+  "purge": 0,
+  "min_inner": 6
+ },
+ "baseline": {
+  "vol-target": 0.45,
+  "dd-throttle": 0.25,
+  "gross": 4.5,
+  "max-weight": 1.5,
+  "longs": 3,
+  "edge": 120,
+  "min-hold": 24,
+  "div-corr": 0.7,
+  "div-lb": 720,
+  "universe": "all"
+ }
+}
